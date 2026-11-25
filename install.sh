@@ -4,7 +4,7 @@ set -euo pipefail
 
 SBX_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
-for cmd in sbx jq git python3; do
+for cmd in sbx git mise; do
   command -v "$cmd" >/dev/null || echo "advarsel: fant ikke '$cmd' i PATH" >&2
 done
 

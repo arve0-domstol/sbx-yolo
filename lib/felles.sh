@@ -13,6 +13,13 @@ if [ -f "$SBX_DIR/config.local.env" ]; then
 fi
 set +a
 
+# Verktøyene i mise.toml (jq, python3) skal komme fra repoet, uansett hvor scriptene kjøres fra.
+if ! command -v mise >/dev/null; then
+  printf '\033[1;31mfeil:\033[0m %s\n' "fant ikke mise i PATH (se README)" >&2
+  exit 1
+fi
+eval "$(mise -C "$SBX_DIR" env -s bash)"
+
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
 advarsel() { printf '\033[1;33madvarsel:\033[0m %s\n' "$*" >&2; }
 feil() { printf '\033[1;31mfeil:\033[0m %s\n' "$*" >&2; exit 1; }

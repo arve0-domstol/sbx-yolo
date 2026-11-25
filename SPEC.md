@@ -61,7 +61,8 @@ sbx/
 ├── policy/
 │   └── github-hviteliste.txt  # tillatte skrivekall mot GitHub
 ├── lib/
-│   ├── felles.sh            # laster config.env (+ config.local.env) og hjelpefunksjoner
+│   ├── felles.sh            # laster config.env (+ config.local.env), mise-verktøy og hjelpefunksjoner
+│   ├── github_policy.py     # implementasjonen av sbx-github-policy
 │   └── sandkasse.sh         # felles argumenter, navngiving og oppretting
 ├── init/                    # kopieres inn i sandkassen og kjøres der
 │   ├── root.sh              # kjøres som root: apt, fish, chsh

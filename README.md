@@ -7,36 +7,33 @@ et git-repo fra denne på sekunder. Skills, GitHub-token og nettverkspolicy hold
 Detaljer om hvordan alt henger sammen, designvalg og åpne spørsmål står i [SPEC.md](SPEC.md).
 Risikoer ved å kjøre agenter i yolo-modus, og hvordan de begrenses, står i [SIKKERHET.md](SIKKERHET.md).
 
-> Testet med `sbx v0.54.1` på macOS (Apple Silicon) og agenten `copilot`.
-
 ## Installasjon
 
-Krav: [`sbx`](https://docs.docker.com/ai/sandboxes/), `git`, `jq`, `python3` og bash. Fish anbefales.
-
-`jq` og `python3` ligger i [mise.toml](mise.toml). `sbx` finnes ikke i mise, så på macOS
-(Apple Silicon, Sonoma 14+) installeres det med Homebrew:
-
+Krav: [`sbx`](https://docs.docker.com/ai/sandboxes/) og [`mise`](https://mise.jdx.dev/):
 ```sh
+# sbx
 brew trust docker/tap
 brew install docker/tap/sbx
 sbx login
+
+# mise
+curl -fsSL https://mise.run | sh
 ```
 
+Installere sbx-yolo:
 ```sh
-git clone <dette-repoet> ~/git/sbx-yolo
-cd ~/git/sbx-yolo
+git clone https://github.com/arve0-domstol/sbx-yolo
+cd sbx-yolo
 mise trust && mise install
 ./install.sh
 ```
-
-`mise.toml` gjelder bare inne i repoet. Scriptene i `bin/` kjøres fra andre kataloger, så
-mangler `jq` eller `python3` globalt, installer dem globalt med `mise use -g jq python`.
 
 `install.sh` gjør scriptene kjørbare og lenker [fish/sbx.fish](fish/sbx.fish) til
 `~/.config/fish/conf.d/sbx.fish`. Det legger `bin/` i `PATH` og gir abbr og completion.
 Bruker du ikke fish, legg `bin/` i `PATH` selv:
 
 ```sh
+# OBS! sjekk at stien er riktig for deg
 export PATH="$HOME/git/sbx-yolo/bin:$PATH"
 ```
 
@@ -62,11 +59,12 @@ sbx-bygg-base
 
 ## Bruk
 
-### `sbx-copilot` og `sbx-shell` – copilot eller fish i sandkassen for et git-repo
+### `sbx-shell`, `sbx-copilot` og `sbx-vscode` – fish, copilot eller vscode i sandkassen for et git-repo
 
 ```
-sbx-copilot [katalog] [--navn NAVN] [--mount] [--ingen-push] [--base TEMPLATE] [-- agent-argumenter]
 sbx-shell   [katalog] [--navn NAVN] [--mount] [--ingen-push] [--base TEMPLATE] [-- kommando]
+sbx-copilot [katalog] [--navn NAVN] [--mount] [--ingen-push] [--base TEMPLATE] [-- agent-argumenter]
+sbx-vscode [katalog] [--navn NAVN] [--mount] [--ingen-push] [--base TEMPLATE] [-- code-argumenter]
 ```
 
 Kommandoene tar de samme argumentene og bruker **samme sandkasse** for en katalog
