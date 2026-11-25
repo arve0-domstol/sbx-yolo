@@ -1,27 +1,43 @@
 #!/usr/bin/env bash
-# Bygger base-template-en (sbx-base) fra bunnen av.
+# Bygger base-template-en (sbx-base). Inkrementelt fra sbx-base:latest når det går,
+# ellers fra bunnen av. Se "sbx-bygg-base --help".
 set -euo pipefail
 # shellcheck source=../lib/felles.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/felles.sh"
 
 bruk() {
-  cat <<EOF
-Bruk: sbx-bygg-base [--behold] [--ingen-hooks]
+  cat <<EOF2
+Bruk: sbx-bygg-base [--full] [--tving] [--behold] [--ingen-hooks]
 
 Bygger template-en $SBX_BASE_REPO:<dato> og $SBX_BASE_REPO:latest for agenten $SBX_AGENT.
 
+Bygget er inkrementelt: det starter fra $SBX_BASE_REPO:latest og kjører bare stegene
+(root, mise, dotfiles, hooks 50–99) som er endret siden sist, pluss alle steg etter
+det første endrede. Sjekksummene ligger i $STEG_FIL i template-en.
+Det bygges fra bunnen av når root-steget er endret, en hook er fjernet, agenten er
+byttet, latest mangler eller siste fulle bygg er eldre enn $SBX_FULLT_BYGG_DAGER dager.
+
+  --full         bygg fra bunnen av
+  --tving        kjør alle steg på nytt oppå latest selv om ingenting er endret
   --behold       la byggesandkassen ($SBX_BUILD_NAME) stå igjen etterpå
   --ingen-hooks  hopp over hooks/*.sh
   -h, --help     vis denne hjelpen
-EOF
+EOF2
 }
+
+STEG_FIL=/etc/sbx-base/steg
+SBX_FULLT_BYGG_DAGER="${SBX_FULLT_BYGG_DAGER:-7}"
 
 BEHOLD=0
 HOOKS=1
+FULL=0
+TVING=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --behold) BEHOLD=1 ;;
     --ingen-hooks) HOOKS=0 ;;
+    --full) FULL=1 ;;
+    --tving) TVING=1 ;;
     -h|--help) bruk; exit 0 ;;
     *) bruk >&2; feil "ukjent argument: $1" ;;
   esac
@@ -30,6 +46,7 @@ done
 
 command -v sbx >/dev/null || feil "fant ikke sbx i PATH"
 command -v jq >/dev/null || feil "fant ikke jq i PATH (brukes til å rydde gamle tags)"
+command -v shasum >/dev/null || feil "fant ikke shasum i PATH"
 
 B="$SBX_BUILD_NAME"
 export SBX_BUILD_NAME
@@ -47,50 +64,206 @@ trap ved_avslutning EXIT
 
 START=$(date +%s)
 
-if sandkasse_finnes "$B"; then
-  info "Fjerner gammel byggesandkasse $B"
-  sbx rm -f "$B"
+# --- Sjekksummer -------------------------------------------------------------
+
+sjekksum() { shasum -a 256 | cut -c1-16; }
+
+# Innholdet i filene, med relativ sti foran hver fil.
+filer_sum() {
+  local f
+  for f in "$@"; do
+    printf '%s\n' "${f#"$SBX_DIR"/}"
+    cat "$f"
+  done | sjekksum
+}
+
+hook_nr() {
+  local nr
+  nr="$(basename "$1" | grep -Eo '^[0-9]+' || echo 99)"
+  echo "$((10#$nr))"
+}
+
+# Hooks 50–99 i alfabetisk rekkefølge.
+hooks_etter() {
+  local hook
+  for hook in "$SBX_DIR"/hooks/*.sh; do
+    [ -e "$hook" ] || continue
+    [ "$(hook_nr "$hook")" -ge 50 ] && echo "$hook"
+  done
+  return 0
+}
+
+# En hook kan ha en linje "# sbx-nøkkel: <kommando>". Utdata fra kommandoen (kjørt
+# på verten) tas med i sjekksummen, f.eks. versjonen av noe hooken installerer.
+hook_sum() {
+  local hook="$1" kommando
+  kommando="$(sed -n 's/^# sbx-nøkkel: //p' "$hook" | head -n 1)"
+  {
+    filer_sum "$hook"
+    [ -z "$kommando" ] || bash -c "$kommando" 2>/dev/null || true
+  } | sjekksum
+}
+
+# Stegene i rekkefølgen de kjøres, med sjekksum av alt som påvirker dem.
+STEG=()
+SUMMER=()
+legg_til_steg() { STEG+=("$1"); SUMMER+=("$2"); }
+
+legg_til_steg root "$({ filer_sum "$SBX_DIR/init/root.sh"; printf '%s\n' "${SBX_APT_EXTRA:-}"; } | sjekksum)"
+legg_til_steg mise "$(filer_sum "$SBX_DIR/init/mise.sh" "$SBX_DIR/init/files/.config/mise/config.toml")"
+DOTFILER=()
+while IFS= read -r f; do DOTFILER+=("$f"); done < <(find "$SBX_DIR/init/files" -type f | LC_ALL=C sort)
+legg_til_steg dotfiles "$({ filer_sum "$SBX_DIR/init/dotfiles.sh" "${DOTFILER[@]}"; printf '%s\n%s\n' "${GIT_USER_NAME:-}" "${GIT_USER_EMAIL:-}"; } | sjekksum)"
+if [ $HOOKS -eq 1 ]; then
+  while IFS= read -r hook; do
+    legg_til_steg "hook:$(basename "$hook")" "$(hook_sum "$hook")"
+  done < <(hooks_etter)
 fi
 
-info "Oppretter $B ($SBX_AGENT, uten workspace)"
-# Uten sti → ingen workspace-mount. Kjøres fra /tmp så ingenting fra cwd lekker inn.
-(cd /tmp && sbx create --no-progress --name "$B" --cpus "$SBX_CPUS" --memory "$SBX_MEMORY" "$SBX_AGENT")
+# --- Byggesandkasse ------------------------------------------------------------
+
+fjern_byggesandkasse() {
+  if sandkasse_finnes "$B"; then
+    sbx rm -f "$B" >/dev/null
+  fi
+}
+
+opprett_byggesandkasse() {
+  # Uten sti → ingen workspace-mount. Kjøres fra /tmp så ingenting fra cwd lekker inn.
+  (cd /tmp && sbx create --no-progress --name "$B" --cpus "$SBX_CPUS" --memory "$SBX_MEMORY" "$@" "$SBX_AGENT")
+}
+
+if sandkasse_finnes "$B"; then
+  info "Fjerner gammel byggesandkasse $B"
+  fjern_byggesandkasse
+fi
+
+# Leser én verdi fra tilstandsfila i base, f.eks. "root" eller "hook:60-vscode.sh".
+GAMMEL=""
+gammel() { printf '%s\n' "$GAMMEL" | awk -v k="$1" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }'; }
+
+GRUNN=""
+if [ $FULL -eq 1 ]; then
+  GRUNN="--full"
+elif ! template_finnes "$SBX_BASE_REPO:latest"; then
+  GRUNN="$SBX_BASE_REPO:latest finnes ikke"
+else
+  info "Oppretter $B fra $SBX_BASE_REPO:latest"
+  opprett_byggesandkasse --pull never -t "$SBX_BASE_REPO:latest"
+  GAMMEL="$(sbx exec "$B" cat "$STEG_FIL" 2>/dev/null || true)"
+  FULL_TID="$(gammel full)"
+  if [ -z "$GAMMEL" ] || ! [[ "$FULL_TID" =~ ^[0-9]+$ ]]; then
+    GRUNN="latest mangler $STEG_FIL"
+  elif [ "$(gammel agent)" != "$SBX_AGENT" ]; then
+    GRUNN="agenten er endret ($(gammel agent) → $SBX_AGENT)"
+  elif [ "$SBX_FULLT_BYGG_DAGER" -gt 0 ] && [ $(( (START - FULL_TID) / 86400 )) -ge "$SBX_FULLT_BYGG_DAGER" ]; then
+    GRUNN="siste fulle bygg er $(( (START - FULL_TID) / 86400 )) dager gammelt (grense $SBX_FULLT_BYGG_DAGER, SBX_FULLT_BYGG_DAGER)"
+  elif [ $HOOKS -eq 1 ]; then
+    while IFS= read -r navn; do
+      [ -e "$SBX_DIR/hooks/$navn" ] || { GRUNN="hooks/$navn er fjernet"; break; }
+    done < <(printf '%s\n' "$GAMMEL" | sed -n 's/^hook:\([^=]*\)=.*/\1/p')
+  fi
+fi
+
+# Indeks for første steg som skal kjøres. ${#STEG[@]} betyr ingen.
+FORSTE=${#STEG[@]}
+if [ -z "$GRUNN" ]; then
+  if [ $TVING -eq 1 ]; then
+    FORSTE=0
+  else
+    for i in "${!STEG[@]}"; do
+      if [ "$(gammel "${STEG[$i]}")" != "${SUMMER[$i]}" ]; then
+        FORSTE=$i
+        break
+      fi
+    done
+  fi
+  if [ "$FORSTE" -lt ${#STEG[@]} ] && [ "${STEG[$FORSTE]}" = root ] && [ $TVING -eq 0 ]; then
+    GRUNN="root-steget er endret"
+  fi
+fi
+
+if [ -n "$GRUNN" ]; then
+  info "Bygger fra bunnen av: $GRUNN"
+  fjern_byggesandkasse
+  info "Oppretter $B ($SBX_AGENT, uten workspace)"
+  opprett_byggesandkasse
+  FULL=1
+  FULL_TID=$START
+  FORSTE=0
+fi
+
+for i in "${!STEG[@]}"; do
+  if [ "$i" -lt "$FORSTE" ]; then
+    status="uendret, hoppes over"
+  elif [ $FULL -eq 1 ] || [ $TVING -eq 1 ]; then
+    status="kjøres"
+  elif [ "$(gammel "${STEG[$i]}")" != "${SUMMER[$i]}" ]; then
+    status="endret, kjøres"
+  else
+    status="kjøres (etter endret steg)"
+  fi
+  printf '    %-22s %s\n' "${STEG[$i]}" "$status" >&2
+done
+
+# --- Hooks og init ---------------------------------------------------------------
+
+# Hooks 00–49 (skills, policy) endrer tilstand på verten og kjøres alltid, før init,
+# slik at nettverksregler er på plass før mise laster ned verktøy.
+if [ $HOOKS -eq 0 ]; then
+  info "Hopper over hooks (--ingen-hooks)"
+else
+  for hook in "$SBX_DIR"/hooks/*.sh; do
+    [ -e "$hook" ] || continue
+    if [ "$(hook_nr "$hook")" -lt 50 ]; then
+      info "Hook: $(basename "$hook")"
+      bash "$hook"
+    fi
+  done
+fi
+
+if [ "$FORSTE" -ge ${#STEG[@]} ]; then
+  fjern_byggesandkasse
+  info "Ingen endringer siden $SBX_BASE_REPO:latest ble bygget. Bruk --tving eller --full for å bygge likevel."
+  exit 0
+fi
 
 info "Kopierer init/ til $B:/tmp/init"
 sbx exec -u root "$B" rm -rf /tmp/init
 sbx cp "$SBX_DIR/init" "$B:/tmp/init"
 
-kjor_hooks() {
-  local fase="$1" hook nr
-  if [ $HOOKS -eq 0 ]; then
-    [ "$fase" = før ] && info "Hopper over hooks (--ingen-hooks)"
-    return
-  fi
-  for hook in "$SBX_DIR"/hooks/*.sh; do
-    [ -e "$hook" ] || continue
-    nr="$(basename "$hook" | grep -Eo '^[0-9]+' || echo 99)"
-    if { [ "$fase" = før ] && [ "$((10#$nr))" -lt 50 ]; } \
-      || { [ "$fase" = etter ] && [ "$((10#$nr))" -ge 50 ]; }; then
-      info "Hook: $(basename "$hook")"
-      bash "$hook"
-    fi
-  done
+kjor_steg() {
+  case "$1" in
+    root)
+      info "Steg root: init/root.sh som root"
+      sbx exec -u root -e "SBX_APT_EXTRA=${SBX_APT_EXTRA:-}" "$B" bash /tmp/init/root.sh ;;
+    mise)
+      info "Steg mise: init/mise.sh som standardbruker"
+      sbx exec "$B" bash /tmp/init/mise.sh ;;
+    dotfiles)
+      info "Steg dotfiles: init/dotfiles.sh som standardbruker"
+      sbx exec \
+        -e "GIT_USER_NAME=${GIT_USER_NAME:-}" \
+        -e "GIT_USER_EMAIL=${GIT_USER_EMAIL:-}" \
+        "$B" bash /tmp/init/dotfiles.sh ;;
+    hook:*)
+      info "Steg ${1}"
+      bash "$SBX_DIR/hooks/${1#hook:}" ;;
+  esac
 }
 
-# Hooks 00–49 (skills, policy) kjøres før init, slik at nettverksregler er på
-# plass før mise laster ned verktøy. Hooks 50–99 kjøres etter init.
-kjor_hooks før
+for i in "${!STEG[@]}"; do
+  [ "$i" -ge "$FORSTE" ] && kjor_steg "${STEG[$i]}"
+done
 
-info "Kjører init/root.sh som root"
-sbx exec -u root -e "SBX_APT_EXTRA=${SBX_APT_EXTRA:-}" "$B" bash /tmp/init/root.sh
-
-info "Kjører init/user.sh som standardbruker"
-sbx exec \
-  -e "GIT_USER_NAME=${GIT_USER_NAME:-}" \
-  -e "GIT_USER_EMAIL=${GIT_USER_EMAIL:-}" \
-  "$B" bash /tmp/init/user.sh
-
-kjor_hooks etter
+info "Skriver sjekksummer til $B:$STEG_FIL"
+{
+  echo "full=$FULL_TID"
+  echo "agent=$SBX_AGENT"
+  for i in "${!STEG[@]}"; do
+    echo "${STEG[$i]}=${SUMMER[$i]}"
+  done
+} | sbx exec -i -u root "$B" sh -c "mkdir -p '$(dirname "$STEG_FIL")' && cat > '$STEG_FIL'"
 
 info "Rydder i $B"
 sbx exec -u root "$B" rm -rf /tmp/init
@@ -124,4 +297,8 @@ sbx template ls --json \
     done
 
 sbx template ls
-info "Ferdig på $(( $(date +%s) - START ))s. Start en sandkasse med: sbx-copilot <katalog>"
+if [ $FULL -eq 1 ]; then
+  info "Ferdig (fullt bygg) på $(( $(date +%s) - START ))s. Start en sandkasse med: sbx-copilot <katalog>"
+else
+  info "Ferdig (inkrementelt) på $(( $(date +%s) - START ))s. Start en sandkasse med: sbx-copilot <katalog>"
+fi

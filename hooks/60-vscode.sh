@@ -2,6 +2,8 @@
 # Forhåndsinstallerer VS Code Server (Remote - SSH) i base for samme versjon som
 # VS Code på verten, slik at sbx-vscode kobler til uten nedlasting. Oppdateres
 # VS Code på verten, lastes ny server ned ved første tilkobling (eller bygg på nytt).
+# Neste linje gjør at sbx-bygg-base kjører hooken på nytt når VS Code-versjonen endres.
+# sbx-nøkkel: code --version | sed -n 2p
 set -euo pipefail
 
 B="$SBX_BUILD_NAME"

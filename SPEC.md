@@ -19,11 +19,13 @@ for installasjon og bruk.
 ```
                  ┌──────────────────────────── vert (macOS) ────────────────────────────┐
                  │                                                                       │
- sbx-bygg-base ──► │ 1. sbx create --name sbx-base-bygg copilot        (uten workspace)    │
+ sbx-bygg-base ──► │ 1. sbx create [-t sbx-base:latest] --name sbx-base-bygg copilot       │
                  │ 2. sbx cp ./init  →  sandkasse:/tmp/init                              │
                  │ 3. sbx exec -u root … init/root.sh   (apt-pakker, fish)               │
-                 │ 4. sbx exec        … init/user.sh    (mise, dotfiles, global config)  │
+                 │ 4. sbx exec        … init/mise.sh    (mise og verktøy)                │
+                 │    sbx exec        … init/dotfiles.sh (dotfiles, global config)       │
                  │ 5. hooks/*.sh på verten              (skills, policy, ekstra exec)    │
+                 │    (bare endrede steg kjøres; sjekksummer i /etc/sbx-base/steg)       │
                  │ 6. sbx template save sbx-base-bygg sbx-base:<dato> (+ :latest)        │
                  │ 7. sbx rm sbx-base-bygg                                               │
                  │                                                                       │
@@ -63,7 +65,8 @@ sbx/
 │   └── sandkasse.sh         # felles argumenter, navngiving og oppretting
 ├── init/                    # kopieres inn i sandkassen og kjøres der
 │   ├── root.sh              # kjøres som root: apt, fish, chsh
-│   ├── user.sh              # kjøres som agent-bruker: mise, dotfiles
+│   ├── mise.sh              # kjøres som agent-bruker: mise, mise install
+│   ├── dotfiles.sh          # kjøres som agent-bruker: dotfiles, git-konfig
 │   └── files/               # filer som legges i $HOME
 │       ├── .config/mise/config.toml       - standardverktøy som skal installeres globalt
 │       ├── .config/fish/config.fish       - sandkasse-variant av lokal konfigurasjon
@@ -92,6 +95,7 @@ SBX_BUILD_NAME=sbx-base-bygg      # midlertidig byggesandkasse
 SBX_CPUS=0                        # 0 = auto
 SBX_MEMORY=8g
 SBX_KEEP_TAGS=3                   # antall dato-tags av base som beholdes
+SBX_FULLT_BYGG_DAGER=7            # fullt bygg når siste fulle bygg er så gammelt (0 = aldri)
 SBX_APT_EXTRA=""                  # ekstra apt-pakker
 # brukes til å konfigurere git i base-template-en
 GIT_USER_NAME="Arve Seljebu"
@@ -115,8 +119,8 @@ Kjøres **inne i** byggesandkassen. Må være idempotente (kan kjøres flere gan
 - sett fish som standard-shell for agent-brukeren (`chsh -s /usr/bin/fish <bruker>`)
 - rydd apt-cache for mindre template (`rm -rf /var/lib/apt/lists/*`)
 
-**`init/user.sh`** (`sbx exec` som standardbruker):
-- kopier `init/files/` til `$HOME` (fish-konfig, abbr, mise-konfig, git-konfig)
+**`init/mise.sh`** (`sbx exec` som standardbruker):
+- kopier `init/files/.config/mise/config.toml` til `$HOME`
 - installer mise: `curl https://mise.run | sh`
 - aktiver mise i fish: `mise activate fish` i interaktive skall, shims i `PATH` ellers (`fish -c …`)
 - aktiver mise i bash: shims legges i `PATH` via `/etc/sandbox-persistent.sh`, som leses av
@@ -124,6 +128,9 @@ Kjøres **inne i** byggesandkassen. Må være idempotente (kan kjøres flere gan
 - `mise install` – installerer alle verktøy fra `~/.config/mise/config.toml`
   (utgangspunkt: kopi av vertens [`~/.config/mise/config.toml`](/Users/arve.seljebu/.config/mise/config.toml))
 - `trusted_config_paths = ["/"]` i mise-konfig, slik at prosjekt-`mise.toml` fungerer uten spørsmål
+
+**`init/dotfiles.sh`** (`sbx exec` som standardbruker):
+- kopier `init/files/` til `$HOME` (fish-konfig, abbr, mise-konfig, git-konfig)
 - global git-konfig (navn, e-post, `init.defaultBranch=main`, `pull.rebase=true`)
 
 Fish-tilpasninger (`init/files/.config/fish/conf.d/abbr.fish`) hentes/velges fra
@@ -132,31 +139,47 @@ vertens [`~/.config/fish`](/Users/arve.seljebu/.config/fish) – bare det som gi
 
 ### 2. `bin/sbx-bygg-base`
 
-Bygger base-template-en fra bunnen av.
+Bygger base-template-en, inkrementelt fra `$SBX_BASE_REPO:latest` når det går.
 
 ```
-sbx-bygg-base [--behold] [--ingen-hooks]
+sbx-bygg-base [--full] [--tving] [--behold] [--ingen-hooks]
 ```
+
+Bygget er delt i steg i fast rekkefølge: `root`, `mise`, `dotfiles` og én per hook `50–99`
+(`hook:60-vscode.sh`, …). Hvert steg har en sjekksum av det som påvirker det (scriptet,
+filene det kopierer og relevante variabler fra `config.env`). En hook kan legge til utdata fra
+en kommando på verten med en linje `# sbx-nøkkel: <kommando>`. Sjekksummene skrives til
+`/etc/sbx-base/steg` i template-en, sammen med agenten og tidspunktet for siste fulle bygg.
+Fila følger template-en, så `--base`/tilbakerulling og manglende `latest` blir riktig.
+
+Det første endrede steget og alle steg etter det kjøres (som lag i Docker). Et fullt bygg
+fra `$SBX_AGENT` gjøres ved `--full`, når `latest` eller tilstandsfila mangler, når agenten
+er byttet, når en hook er fjernet, når `root` er endret (da kjøres alle steg uansett) og når
+siste fulle bygg er eldre enn `SBX_FULLT_BYGG_DAGER`. Det siste fjerner rester som
+inkrementelle bygg ikke rydder (slettede dotfiles, fjernede mise-verktøy) og gir oppdaterte
+pakker. `--tving` kjører alle steg oppå `latest`. Er ingenting endret, lagres ingen ny tag.
 
 Steg:
 
-1. `source config.env` (+ `config.local.env`)
+1. `source config.env` (+ `config.local.env`) og regn ut sjekksummer på verten
 2. Fjern eventuell gammel byggesandkasse: `sbx rm -f $SBX_BUILD_NAME`
-3. Opprett uten workspace-mount:
-   `sbx create --name $SBX_BUILD_NAME --cpus $SBX_CPUS --memory $SBX_MEMORY $SBX_AGENT`
-4. `sbx cp ./init $SBX_BUILD_NAME:/tmp/init`
-5. Kjør `hooks/00–49*.sh` på verten (skills, policy) – policy må være på plass før `mise install`
-6. `sbx exec -u root $SBX_BUILD_NAME bash /tmp/init/root.sh`
-7. `sbx exec $SBX_BUILD_NAME bash /tmp/init/user.sh`
-8. Kjør `hooks/50–99*.sh` på verten (ekstra kommandoer). Alle hooks får `SBX_BUILD_NAME` og
+3. Opprett uten workspace-mount, fra `latest` eller fra bunnen av:
+   `sbx create [--pull never -t $SBX_BASE_REPO:latest] --name $SBX_BUILD_NAME --cpus $SBX_CPUS --memory $SBX_MEMORY $SBX_AGENT`
+4. Les `/etc/sbx-base/steg` og avgjør første steg som skal kjøres (eller fullt bygg)
+5. Kjør `hooks/00–49*.sh` på verten (skills, policy) – alltid, og før init, så policy er på plass før `mise install`
+6. Avslutt hvis ingenting er endret
+7. `sbx cp ./init $SBX_BUILD_NAME:/tmp/init`
+8. Kjør stegene fra det første endrede: `init/root.sh` (root), `init/mise.sh`,
+   `init/dotfiles.sh` og `hooks/50–99*.sh` på verten. Alle hooks får `SBX_BUILD_NAME` og
    variablene fra `config.env` eksportert
-9. Rydd: `sbx exec $SBX_BUILD_NAME rm -rf /tmp/init ~/.cache/*`
-10. Stopp: `sbx stop $SBX_BUILD_NAME` (`template save` krever stoppet sandkasse)
-11. Lagre:
+9. Skriv sjekksummene til `/etc/sbx-base/steg`
+10. Rydd: `sbx exec $SBX_BUILD_NAME rm -rf /tmp/init ~/.cache/*`
+11. Stopp: `sbx stop $SBX_BUILD_NAME` (`template save` krever stoppet sandkasse)
+12. Lagre:
    `sbx template save $SBX_BUILD_NAME $SBX_BASE_REPO:$(date +%Y%m%d-%H%M)`
    og `sbx template save $SBX_BUILD_NAME $SBX_BASE_REPO:latest`
-12. `sbx rm $SBX_BUILD_NAME` (med mindre `--behold`)
-13. Rydd gamle dato-tags (behold `$SBX_KEEP_TAGS`) og skriv ut `sbx template ls`
+13. `sbx rm $SBX_BUILD_NAME` (med mindre `--behold`)
+14. Rydd gamle dato-tags (behold `$SBX_KEEP_TAGS`) og skriv ut `sbx template ls`
 
 Feilhåndtering: `set -euo pipefail`, og `trap` som lar byggesandkassen stå igjen ved feil
 slik at man kan feilsøke med `sbx exec -it $SBX_BUILD_NAME fish`.
@@ -344,7 +367,7 @@ branch protection grensen.
 
 ## Mise og rask oppstart
 
-- Alle mise-verktøy installeres i `user.sh` og **bakes inn i template-en** → ny sandkasse
+- Alle mise-verktøy installeres i `mise.sh` og **bakes inn i template-en** → ny sandkasse
   starter uten nedlastinger.
 - Prosjektspesifikke verktøy (repoets `mise.toml`) som ikke finnes i base, installeres ved
   behov med `mise install` i sandkassen. Hyppig brukte versjoner flyttes inn i
@@ -369,12 +392,14 @@ av det samme, og `sbx env` / `sbxenv.yaml` for deklarativ oppretting.
 2. **Init-script**
    - [x] `init/root.sh` – apt-pakker, fish, `chsh`
    - [x] `init/files/` – fish-konfig og abbr, mise-konfig, git-konfig
-   - [x] `init/user.sh` – dotfiles, mise, `mise install`
+   - [x] `init/mise.sh` – mise, `mise install`
+   - [x] `init/dotfiles.sh` – dotfiles, git-konfig
    - [x] Test manuelt i en vanlig sandkasse
 3. **`sbx-bygg-base`**
    - [x] Opprett → cp → hooks → exec → hooks → stop → template save → rm
    - [x] Dato-tag + `latest`, opprydding av gamle tags
    - [x] `--behold` og trap ved feil
+   - [x] Inkrementelt bygg med sjekksum per steg (`--full`, `--tving`, `SBX_FULLT_BYGG_DAGER`)
 4. **Hooks**
    - [x] `10-skills.sh` – import/add/update
    - [x] `20-policy.sh` – allow for mise/registre (deny for push per sandkasse med `--ingen-push`)

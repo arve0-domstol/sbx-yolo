@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Kjøres som agent-bruker inne i byggesandkassen: dotfiles, mise og global konfig.
+# Kjøres som agent-bruker inne i byggesandkassen: mise og globale verktøy.
 # Idempotent – trygt å kjøre flere ganger.
 set -euo pipefail
 
 INIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MISE="$HOME/.local/bin/mise"
 
-echo "==> Kopierer dotfiles til $HOME"
-cp -R "$INIT_DIR/files/." "$HOME/"
+echo "==> Kopierer mise-konfig"
+install -D -m 644 "$INIT_DIR/files/.config/mise/config.toml" "$HOME/.config/mise/config.toml"
 
 echo "==> Installerer mise"
 if [ ! -x "$MISE" ]; then
@@ -25,17 +25,12 @@ echo "==> mise install"
 PERSISTENT=/etc/sandbox-persistent.sh
 MARKER='# sbx: mise'
 if [ -w "$PERSISTENT" ] && ! grep -qF "$MARKER" "$PERSISTENT"; then
-  cat >> "$PERSISTENT" <<'EOF'
+  cat >> "$PERSISTENT" <<'EOS'
 # sbx: mise
 export PATH="$HOME/.local/share/mise/shims:$PATH"
-EOF
+EOS
 fi
-
-echo "==> Git-konfig"
-GITCONFIG="$HOME/.config/git/config"
-[ -n "${GIT_USER_NAME:-}" ] && git config --file "$GITCONFIG" user.name "$GIT_USER_NAME"
-[ -n "${GIT_USER_EMAIL:-}" ] && git config --file "$GITCONFIG" user.email "$GIT_USER_EMAIL"
 
 echo "==> Verktøy i base:"
 "$MISE" ls --current || true
-echo "user.sh ferdig"
+echo "mise.sh ferdig"

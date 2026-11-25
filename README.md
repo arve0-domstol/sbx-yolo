@@ -145,12 +145,33 @@ Slik fungerer det:
 ### `sbx-bygg-base` – bygg base-template
 
 ```
-sbx-bygg-base [--behold] [--ingen-hooks]
+sbx-bygg-base [--full] [--tving] [--behold] [--ingen-hooks]
 ```
 
 Lager `sbx-base:<ÅÅÅÅMMDD-TTMM>` og `sbx-base:latest`, og beholder de tre siste dato-tagene.
-Det tar et par minutter. Bygg på nytt når du endrer oppsettet eller vil ha oppdaterte pakker.
+Bygg på nytt når du endrer oppsettet eller vil ha oppdaterte pakker.
 
+Bygget er inkrementelt. Det starter fra `sbx-base:latest` og kjører bare stegene som er
+endret siden sist, og alle steg etter det første endrede:
+
+| Steg       | Sjekksum av |
+|------------|-------------|
+| `root`     | [init/root.sh](init/root.sh) og `SBX_APT_EXTRA` |
+| `mise`     | [init/mise.sh](init/mise.sh) og [mise-konfigen](init/files/.config/mise/config.toml) |
+| `dotfiles` | [init/dotfiles.sh](init/dotfiles.sh), alt i [init/files/](init/files/), `GIT_USER_NAME` og `GIT_USER_EMAIL` |
+| `hook:NN-*.sh` | hver hook `50–99`, og utdata fra en eventuell `# sbx-nøkkel: <kommando>`-linje i hooken |
+
+Sjekksummene lagres i `/etc/sbx-base/steg` i template-en. Er ingenting endret, avslutter
+scriptet uten å lagre en ny tag. En endring i fish-konfigen tar sekunder, mens et fullt
+bygg tar et par minutter.
+
+Det bygges fra bunnen av når root-steget er endret, en hook er fjernet, agenten er byttet,
+`latest` mangler, eller når siste fulle bygg er eldre enn `SBX_FULLT_BYGG_DAGER` (7 dager).
+Det siste gir oppdaterte apt-pakker og mise-verktøy, og fjerner rester etter inkrementelle
+bygg (f.eks. slettede filer i `init/files/` eller fjernede mise-verktøy).
+
+- `--full` bygger fra bunnen av.
+- `--tving` kjører alle steg på nytt oppå `latest`, selv om ingenting er endret.
 - `--behold` lar byggesandkassen `sbx-base-bygg` stå igjen etterpå.
 - `--ingen-hooks` hopper over `hooks/*.sh`.
 - Feiler bygget, står byggesandkassen igjen. Da kan du feilsøke med `sbx exec -it sbx-base-bygg fish`.
@@ -215,7 +236,7 @@ skills, secrets og policy gjelder uten nytt bygg.
 
 | Hva                         | Hvor |
 |-----------------------------|------|
-| Agent, navn, minne, CPU, git-navn/e-post, antall tags | [config.env](config.env), eller `config.local.env` for lokale overstyringer (ikke versjonert) |
+| Agent, navn, minne, CPU, git-navn/e-post, antall tags, intervall for fullt bygg | [config.env](config.env), eller `config.local.env` for lokale overstyringer (ikke versjonert) |
 | apt-pakker                  | [init/root.sh](init/root.sh) eller `SBX_APT_EXTRA` i `config.env` |
 | mise-verktøy (go, java, python, …) | [init/files/.config/mise/config.toml](init/files/.config/mise/config.toml) |
 | fish-konfig og abbr i sandkassen | [init/files/.config/fish/](init/files/.config/fish/) |
@@ -230,6 +251,10 @@ skills, secrets og policy gjelder uten nytt bygg.
 Hooks kjøres **på verten** i alfabetisk rekkefølge. `SBX_BUILD_NAME` og variablene fra
 `config.env` er tilgjengelige. Hooks med nummer `00–49` kjøres *før* init-scriptene
 (f.eks. policy som må være på plass før `mise install`), og `50–99` kjøres *etter*.
+Hooks `00–49` kjøres ved hvert bygg og bør bare endre tilstand på verten. Hooks `50–99`
+kjøres bare når de er endret (se [sbx-bygg-base](#sbx-bygg-base--bygg-base-template)). Avhenger
+en hook av noe utenfor fila, legg inn en linje `# sbx-nøkkel: <kommando>`. Utdata fra
+kommandoen tas da med i sjekksummen, slik [hooks/60-vscode.sh](hooks/60-vscode.sh) gjør med VS Code-versjonen.
 
 Feiler `mise install` eller `apt-get` på grunn av nettverk, finner du verten med `sbx policy log`.
 Legg den til i `ALLOW_HOSTS` og bygg på nytt.
@@ -245,7 +270,7 @@ bin/sbx-github-policy  synkroniserer GitHub-hvitelisten til sbx policy
 policy/             hviteliste for skrivekall mot GitHub
 lib/felles.sh       laster config og felles hjelpefunksjoner
 lib/sandkasse.sh    felles argumenter, navngiving og oppretting for sbx-copilot/sbx-shell
-init/               kopieres inn i byggesandkassen (root.sh, user.sh, files/)
+init/               kopieres inn i byggesandkassen (root.sh, mise.sh, dotfiles.sh, files/)
 hooks/              kjøres på verten under bygging
 fish/sbx.fish       fish-integrasjon for verten
 config.env          felles variabler

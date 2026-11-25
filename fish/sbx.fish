@@ -38,6 +38,8 @@ for cmd in sbx-copilot sbx-shell sbx-vscode
 end
 
 complete -c sbx-bygg-base -f
+complete -c sbx-bygg-base -l full -d 'Bygg fra bunnen av'
+complete -c sbx-bygg-base -l tving -d 'Kjør alle steg på nytt oppå latest'
 complete -c sbx-bygg-base -l behold -d 'La byggesandkassen stå igjen'
 complete -c sbx-bygg-base -l ingen-hooks -d 'Hopp over hooks/*.sh'
 complete -c sbx-bygg-base -s h -l help -d 'Vis hjelp'
