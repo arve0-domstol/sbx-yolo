@@ -1,4 +1,4 @@
-# sbx – gjenbrukbart oppsett for Docker Sandboxes
+# sbx-yolo – tryggere yolo for agenten din
 
 Bygger en lokal **base-template** for [Docker Sandboxes (`sbx`)](https://docs.docker.com/ai/sandboxes/)
 med fish, mise-verktøy og global konfigurasjon ferdig installert, og starter nye sandkasser for
@@ -23,8 +23,8 @@ sbx login
 ```
 
 ```sh
-git clone <dette-repoet> ~/git/sbx
-cd ~/git/sbx
+git clone <dette-repoet> ~/git/sbx-yolo
+cd ~/git/sbx-yolo
 mise trust && mise install
 ./install.sh
 ```
@@ -37,7 +37,7 @@ mangler `jq` eller `python3` globalt, installer dem globalt med `mise use -g jq 
 Bruker du ikke fish, legg `bin/` i `PATH` selv:
 
 ```sh
-export PATH="$HOME/git/sbx/bin:$PATH"
+export PATH="$HOME/git/sbx-yolo/bin:$PATH"
 ```
 
 Lagre GitHub-token som secret på verten (tokenet havner aldri i sandkassen):
