@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# VS Code (Remote - SSH) mot sandkassen for en git-katalog.
+set -euo pipefail
+LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib"
+# shellcheck source=../lib/felles.sh
+source "$LIB/felles.sh"
+# shellcheck source=../lib/sandkasse.sh
+source "$LIB/sandkasse.sh"
+
+bruk() {
+  cat <<HJELP
+Bruk: sbx-vscode [katalog] [flagg] [-- code-argumenter]
+
+Åpner VS Code med Remote - SSH mot sandkassen for git-repoet i <katalog>
+(standard: gjeldende katalog), i workspace-katalogen. Sandkassen opprettes fra
+$SBX_BASE_REPO:latest hvis den ikke finnes, og startes hvis den er stoppet.
+Samme sandkasse som sbx-copilot og sbx-shell bruker.
+
+Krever VS Code-kommandoen 'code' i PATH, utvidelsen ms-vscode-remote.remote-ssh
+og SSH-oppsettet fra 'sbx setup ssh' (kjøres automatisk hvis det mangler).
+
+$(felles_flagg_hjelp)
+HJELP
+}
+
+les_argumenter "$@"
+
+command -v code >/dev/null \
+  || feil "fant ikke 'code' i PATH (VS Code: «Shell Command: Install 'code' command in PATH»)"
+command -v jq >/dev/null || feil "fant ikke jq i PATH"
+
+if ! ssh -G "$NAVN.sbx" 2>/dev/null | grep -qi '^proxycommand .*sbx.* ssh proxy'; then
+  info "Setter opp SSH for *.sbx (sbx setup ssh)"
+  sbx setup ssh >/dev/null
+fi
+
+sikre_sandkasse
+
+info "Starter $NAVN"
+sbx exec "$NAVN" true
+
+MAPPE="$(sbx inspect "$NAVN" --json | jq -r '.effective_working_dir // .workspace // empty')"
+[ -n "$MAPPE" ] || feil "fant ikke workspace-katalogen til $NAVN"
+
+info "Åpner VS Code: ssh-remote+$NAVN.sbx $MAPPE"
+exec code --remote "ssh-remote+$NAVN.sbx" "${EKSTRA_ARGS[@]+"${EKSTRA_ARGS[@]}"}" "$MAPPE"

@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Bygger base-template-en (sbx-base) fra bunnen av.
+set -euo pipefail
+# shellcheck source=../lib/felles.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/felles.sh"
+
+bruk() {
+  cat <<EOF
+Bruk: sbx-bygg-base [--behold] [--ingen-hooks]
+
+Bygger template-en $SBX_BASE_REPO:<dato> og $SBX_BASE_REPO:latest for agenten $SBX_AGENT.
+
+  --behold       la byggesandkassen ($SBX_BUILD_NAME) stå igjen etterpå
+  --ingen-hooks  hopp over hooks/*.sh
+  -h, --help     vis denne hjelpen
+EOF
+}
+
+BEHOLD=0
+HOOKS=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --behold) BEHOLD=1 ;;
+    --ingen-hooks) HOOKS=0 ;;
+    -h|--help) bruk; exit 0 ;;
+    *) bruk >&2; feil "ukjent argument: $1" ;;
+  esac
+  shift
+done
+
+command -v sbx >/dev/null || feil "fant ikke sbx i PATH"
+command -v jq >/dev/null || feil "fant ikke jq i PATH (brukes til å rydde gamle tags)"
+
+B="$SBX_BUILD_NAME"
+export SBX_BUILD_NAME
+
+ved_avslutning() {
+  local status=$?
+  if [ $status -ne 0 ]; then
+    printf '\n' >&2
+    advarsel "bygget feilet (status $status). Byggesandkassen står igjen for feilsøking:"
+    printf '    sbx exec -it %s fish     # eller bash\n' "$B" >&2
+    printf '    sbx rm -f %s             # rydd når du er ferdig\n' "$B" >&2
+  fi
+}
+trap ved_avslutning EXIT
+
+START=$(date +%s)
+
+if sandkasse_finnes "$B"; then
+  info "Fjerner gammel byggesandkasse $B"
+  sbx rm -f "$B"
+fi
+
+info "Oppretter $B ($SBX_AGENT, uten workspace)"
+# Uten sti → ingen workspace-mount. Kjøres fra /tmp så ingenting fra cwd lekker inn.
+(cd /tmp && sbx create --no-progress --name "$B" --cpus "$SBX_CPUS" --memory "$SBX_MEMORY" "$SBX_AGENT")
+
+info "Kopierer init/ til $B:/tmp/init"
+sbx exec -u root "$B" rm -rf /tmp/init
+sbx cp "$SBX_DIR/init" "$B:/tmp/init"
+
+kjor_hooks() {
+  local fase="$1" hook nr
+  if [ $HOOKS -eq 0 ]; then
+    [ "$fase" = før ] && info "Hopper over hooks (--ingen-hooks)"
+    return
+  fi
+  for hook in "$SBX_DIR"/hooks/*.sh; do
+    [ -e "$hook" ] || continue
+    nr="$(basename "$hook" | grep -Eo '^[0-9]+' || echo 99)"
+    if { [ "$fase" = før ] && [ "$((10#$nr))" -lt 50 ]; } \
+      || { [ "$fase" = etter ] && [ "$((10#$nr))" -ge 50 ]; }; then
+      info "Hook: $(basename "$hook")"
+      bash "$hook"
+    fi
+  done
+}
+
+# Hooks 00–49 (skills, policy) kjøres før init, slik at nettverksregler er på
+# plass før mise laster ned verktøy. Hooks 50–99 kjøres etter init.
+kjor_hooks før
+
+info "Kjører init/root.sh som root"
+sbx exec -u root -e "SBX_APT_EXTRA=${SBX_APT_EXTRA:-}" "$B" bash /tmp/init/root.sh
+
+info "Kjører init/user.sh som standardbruker"
+sbx exec \
+  -e "GIT_USER_NAME=${GIT_USER_NAME:-}" \
+  -e "GIT_USER_EMAIL=${GIT_USER_EMAIL:-}" \
+  "$B" bash /tmp/init/user.sh
+
+kjor_hooks etter
+
+info "Rydder i $B"
+sbx exec -u root "$B" rm -rf /tmp/init
+# shellcheck disable=SC2016
+sbx exec "$B" bash -c 'rm -rf "$HOME"/.cache/*'
+
+info "Stopper $B (må være stoppet for template save)"
+sbx stop "$B" >/dev/null
+
+TAG_DATO="$SBX_BASE_REPO:$(date +%Y%m%d-%H%M)"
+info "Lagrer $TAG_DATO og $SBX_BASE_REPO:latest"
+sbx template save "$B" "$TAG_DATO"
+sbx template save "$B" "$SBX_BASE_REPO:latest"
+
+if [ $BEHOLD -eq 0 ]; then
+  info "Fjerner $B"
+  sbx rm -f "$B" >/dev/null
+else
+  info "Beholder $B (--behold)"
+fi
+
+info "Rydder gamle dato-tags (beholder $SBX_KEEP_TAGS)"
+sbx template ls --json \
+  | jq -r --arg repo "$SBX_BASE_REPO" '
+      .[] | select(.repository == $repo or .repository == "docker.io/library/" + $repo)
+          | select(.tag | test("^[0-9]{8}-[0-9]{4}$")) | .tag' \
+  | sort -ru | tail -n +"$((SBX_KEEP_TAGS + 1))" \
+  | while read -r tag; do
+      info "Fjerner $SBX_BASE_REPO:$tag"
+      sbx template rm -f "$SBX_BASE_REPO:$tag" >/dev/null
+    done
+
+sbx template ls
+info "Ferdig på $(( $(date +%s) - START ))s. Start en sandkasse med: sbx-copilot <katalog>"

@@ -1,0 +1,12 @@
+[tools]
+ast-grep = "latest"
+codegraph = "latest"
+google-java-format = "latest"
+java = "17"
+python = "latest"
+
+[settings]
+# I sandkassen er det trygt å stole på alle mise.toml-filer, slik at
+# prosjektkonfig fungerer uten spørsmål.
+trusted_config_paths = ["/"]
+yes = true

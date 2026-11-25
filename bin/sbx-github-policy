@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Synkroniserer policy/github-hviteliste.txt til sbx-nettverksregler.
+
+sbx lar deny-regler vinne over allow-regler, og copilot-kitet gir alltid en
+allow for hele api.github.com. En hviteliste må derfor uttrykkes som deny-regler
+for alt som *ikke* står i lista. Scriptet regner ut komplementet av stiene med
+glob-mønstre (*, ** og [!abc]) og legger til/fjerner regler slik at sbx sin
+policy samsvarer med fila.
+"""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+SBX_DIR = Path(__file__).resolve().parent.parent
+STANDARD_FIL = SBX_DIR / "policy" / "github-hviteliste.txt"
+SKRIVEMETODER = ("POST", "PUT", "PATCH", "DELETE")
+SEGMENT = re.compile(r"^[a-z0-9._~-]+$")
+# Global push-blokkering (SBX_GLOBAL_DENY_PUSH i hooks/20-policy.sh) styres ikke herfra.
+IKKE_STYRT = {("github.com", "/**/git-receive-pack")}
+
+
+def feil(melding):
+    print(f"\033[1;31mfeil:\033[0m {melding}", file=sys.stderr)
+    sys.exit(1)
+
+
+def info(melding):
+    print(f"\033[1;34m==>\033[0m {melding}", file=sys.stderr)
+
+
+def les_hviteliste(fil):
+    """Returnerer {vert: {metode: [segmentliste, ...]}}."""
+    verter = {}
+    vert = None
+    for nr, linje in enumerate(fil.read_text().splitlines(), 1):
+        linje = linje.split("#", 1)[0].strip()
+        if not linje:
+            continue
+        if linje.startswith("[") and linje.endswith("]"):
+            vert = linje[1:-1].strip().lower()
+            verter.setdefault(vert, {m: [] for m in SKRIVEMETODER})
+            continue
+        if vert is None:
+            feil(f"{fil}:{nr}: regel før første [vert]")
+        deler = linje.split()
+        if len(deler) != 2:
+            feil(f"{fil}:{nr}: forventet 'METODE /sti', fikk '{linje}'")
+        metoder, sti = deler[0].upper().split(","), deler[1].lower()
+        for m in metoder:
+            if m not in SKRIVEMETODER:
+                feil(f"{fil}:{nr}: ukjent skrivemetode '{m}' (lesing er alltid tillatt)")
+        if not sti.startswith("/") or sti == "/":
+            feil(f"{fil}:{nr}: stien må starte med / og ha minst ett segment")
+        segmenter = sti[1:].split("/")
+        for i, s in enumerate(segmenter):
+            if s == "**" and i == len(segmenter) - 1:
+                continue
+            if s != "*" and not SEGMENT.match(s):
+                feil(f"{fil}:{nr}: ugyldig segment '{s}' (tillatt: a-z 0-9 . _ ~ -, * eller ** til slutt)")
+        for m in metoder:
+            verter[vert][m].append(segmenter)
+    return verter
+
+
+class Node:
+    def __init__(self):
+        self.terminal = False  # stien selv er tillatt
+        self.alt = False       # alt under (og stien selv) er tillatt
+        self.bokstavelig = {}
+        self.stjerne = None
+
+
+def sett_inn(node, segmenter):
+    if not segmenter:
+        node.terminal = True
+        return
+    s, rest = segmenter[0], segmenter[1:]
+    if s == "**":
+        node.alt = node.terminal = True
+        return
+    if s == "*":
+        node.stjerne = node.stjerne or Node()
+        sett_inn(node.stjerne, rest)
+    else:
+        sett_inn(node.bokstavelig.setdefault(s, Node()), rest)
+
+
+def slå_sammen(a, b):
+    """Union av to trær (ny node)."""
+    if a is None or b is None:
+        return kopi(a or b)
+    n = Node()
+    n.terminal = a.terminal or b.terminal
+    n.alt = a.alt or b.alt
+    for k in set(a.bokstavelig) | set(b.bokstavelig):
+        n.bokstavelig[k] = slå_sammen(a.bokstavelig.get(k), b.bokstavelig.get(k))
+    n.stjerne = slå_sammen(a.stjerne, b.stjerne)
+    return n
+
+
+def kopi(node):
+    if node is None:
+        return None
+    return slå_sammen(node, Node())
+
+
+def normaliser(node):
+    """Et *-barn gjelder også bokstavelige søsken, så det flettes inn i dem."""
+    if node.stjerne:
+        for k in node.bokstavelig:
+            node.bokstavelig[k] = slå_sammen(node.bokstavelig[k], node.stjerne)
+        normaliser(node.stjerne)
+    for barn in node.bokstavelig.values():
+        normaliser(barn)
+
+
+def tegnklasse(tegn):
+    tegn = sorted(tegn)
+    if "-" in tegn:  # må stå sist for ikke å bli et intervall
+        tegn.remove("-")
+        tegn.append("-")
+    return "[!" + "".join(tegn) + "]"
+
+
+def segment_komplement(literaler):
+    """Glob-mønstre som til sammen treffer alle ikke-tomme segmenter utenom literalene."""
+    if not literaler:
+        return ["*"]
+    ut = []
+
+    def rek(prefiks, suffikser):
+        if prefiks and "" not in suffikser:
+            ut.append(prefiks)
+        første = {s[0] for s in suffikser if s}
+        if not første:
+            ut.append(prefiks + "[!/]*")
+            return
+        ut.append(prefiks + tegnklasse(første) + "*")
+        for c in sorted(første):
+            rek(prefiks + c, {s[1:] for s in suffikser if s and s[0] == c})
+
+    rek("", set(literaler))
+    return ut
+
+
+def klamme(alternativer):
+    return alternativer[0] if len(alternativer) == 1 else "{" + ",".join(alternativer) + "}"
+
+
+def deny_stier(node, prefiks=""):
+    """Én deny-sti per node i treet, med {a,b,...} for alternativene på nivået under.
+
+    "x/**" skrives alltid sammen med "x", fordi sbx ikke lar "[!a]*/**" treffe
+    stien selv.
+    """
+    if node.alt:
+        return []
+    alternativer, stier = [], []
+    andre = segment_komplement(node.bokstavelig)
+    if node.stjerne is None:
+        for g in andre:
+            alternativer += [g, f"{g}/**"]
+    elif not node.stjerne.alt:
+        if not node.stjerne.terminal:
+            alternativer += andre
+        stier += deny_stier(node.stjerne, f"{prefiks}/{klamme(andre)}")
+    for lit in sorted(node.bokstavelig):
+        barn = node.bokstavelig[lit]
+        if barn.alt:
+            continue
+        if not barn.terminal:
+            alternativer.append(lit)
+        stier += deny_stier(barn, f"{prefiks}/{lit}")
+    if alternativer:
+        stier.insert(0, f"{prefiks}/{klamme(alternativer)}")
+    return stier
+
+
+def deny_stier_rot(rot):
+    if rot.alt:
+        return []
+    if not rot.bokstavelig and rot.stjerne is None:
+        return ["/**"]
+    return ([] if rot.terminal else ["/"]) + deny_stier(rot)
+
+
+def ønskede_regler(verter):
+    """Returnerer mengde av (vert, metoder, sti), der metoder er kommaseparert."""
+    regler = set()
+    for vert, per_metode in verter.items():
+        stier_per_metode = {}
+        for metode in SKRIVEMETODER:
+            rot = Node()
+            for segmenter in per_metode[metode]:
+                sett_inn(rot, segmenter)
+            normaliser(rot)
+            stier_per_metode[metode] = list(dict.fromkeys(deny_stier_rot(rot)))
+        # Slå sammen metoder som skal ha akkurat samme regler
+        grupper = {}
+        for metode in SKRIVEMETODER:
+            grupper.setdefault(tuple(stier_per_metode[metode]), []).append(metode)
+        for stier, metoder in grupper.items():
+            for sti in stier:
+                regler.add((vert, ",".join(metoder), sti))
+    return regler
+
+
+def sbx(*args, sjekk=True):
+    return subprocess.run(["sbx", *args], check=sjekk, text=True, capture_output=True)
+
+
+def er_github(vert):
+    return vert == "github.com" or vert.endswith(".github.com")
+
+
+def eksisterende_regler(sandkasse):
+    """Styrte regler: HTTP-deny for github.com/*.github.com i valgt scope."""
+    args = ["policy", "ls", "--json"] + ([sandkasse] if sandkasse else [])
+    data = json.loads(sbx(*args).stdout)
+    scope = f"sandbox:{sandkasse}" if sandkasse else "global"
+    regler = {}
+    for r in data.get("rules", []):
+        if r.get("scope") != scope or r.get("resource_type") != "http" or r.get("decision") != "deny":
+            continue
+        mål = r.get("http_targets") or []
+        if len(mål) != 1 or r.get("queries"):
+            continue
+        vert, sti = mål[0]["host"].lower(), mål[0]["path"]
+        if not er_github(vert) or (vert, sti) in IKKE_STYRT:
+            continue
+        metoder = ",".join(m for m in SKRIVEMETODER if m in r.get("methods", []))
+        regler.setdefault((vert, metoder, sti), []).append(r["id"])
+    return regler
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="sbx-github-policy",
+        description="Synkroniserer hvitelisten for skrivekall mot GitHub til sbx policy (deny-regler).",
+    )
+    p.add_argument("--fil", type=Path, default=STANDARD_FIL, help=f"hviteliste (standard: {STANDARD_FIL.relative_to(SBX_DIR)})")
+    p.add_argument("--vis", action="store_true", help="vis endringene uten å gjøre dem")
+    p.add_argument("--fjern", action="store_true", help="fjern alle styrte regler (åpner for alle skrivekall igjen)")
+    p.add_argument("--sandbox", metavar="NAVN", help="legg reglene på én sandkasse i stedet for globalt (for testing)")
+    a = p.parse_args()
+
+    if not a.fil.is_file():
+        feil(f"fant ikke {a.fil}")
+    ønsket = set() if a.fjern else ønskede_regler(les_hviteliste(a.fil))
+    finnes = eksisterende_regler(a.sandbox)
+
+    fjern = [(r, i) for r, ider in finnes.items() for i in (ider if r not in ønsket else ider[1:])]
+    legg_til = sorted(ønsket - finnes.keys())
+    scope = ["--sandbox", a.sandbox] if a.sandbox else []
+    hvor = f"sandkassen {a.sandbox}" if a.sandbox else "globalt"
+
+    if a.vis:
+        for (vert, metoder, sti), _ in sorted(fjern):
+            print(f"- deny {metoder:<22} {vert}{sti}")
+        for vert, metoder, sti in legg_til:
+            print(f"+ deny {metoder:<22} {vert}{sti}")
+        sys.stdout.flush()
+        info(f"{len(ønsket)} regler ønsket {hvor}: {len(legg_til)} nye, {len(fjern)} fjernes (--vis, ingenting endret)")
+        return
+
+    for (vert, metoder, sti), regel_id in fjern:
+        r = sbx("policy", "rm", "network", *scope, "--id", regel_id, "--force", sjekk=False)
+        if r.returncode != 0:
+            feil(f"klarte ikke å fjerne {metoder} {vert}{sti}: {r.stderr.strip()}")
+    for vert, metoder, sti in legg_til:
+        r = sbx("policy", "deny", "network", *scope, vert, "--method", metoder, "--path", sti, sjekk=False)
+        if r.returncode != 0:
+            feil(f"klarte ikke å legge til {metoder} {vert}{sti}: {r.stderr.strip()}")
+    info(f"GitHub-policy {hvor}: {len(ønsket)} deny-regler ({len(legg_til)} nye, {len(fjern)} fjernet)")
+
+
+if __name__ == "__main__":
+    main()

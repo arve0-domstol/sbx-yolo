@@ -1,0 +1,3 @@
+[tools]
+jq = "latest"
+python = "3"

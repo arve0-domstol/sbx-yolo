@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Fish-skall (eller en kommando) i sandkassen for en git-katalog.
+set -euo pipefail
+LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib"
+# shellcheck source=../lib/felles.sh
+source "$LIB/felles.sh"
+# shellcheck source=../lib/sandkasse.sh
+source "$LIB/sandkasse.sh"
+
+bruk() {
+  cat <<HJELP
+Bruk: sbx-shell [katalog] [flagg] [-- kommando [argumenter]]
+
+Åpner fish i sandkassen for git-repoet i <katalog> (standard: gjeldende katalog),
+i workspace-katalogen. Med "-- kommando" kjøres kommandoen i stedet for fish.
+Sandkassen opprettes fra $SBX_BASE_REPO:latest hvis den ikke finnes. Samme
+sandkasse som sbx-copilot bruker.
+
+$(felles_flagg_hjelp)
+HJELP
+}
+
+les_argumenter "$@"
+sikre_sandkasse
+
+if [ ${#EKSTRA_ARGS[@]} -eq 0 ]; then
+  EKSTRA_ARGS=(fish)
+fi
+
+EXEC_ARGS=(-i "${AGENT_ENV[@]}")
+[ -t 0 ] && [ -t 1 ] && EXEC_ARGS+=(-t)
+exec sbx exec "${EXEC_ARGS[@]}" "$NAVN" "${EKSTRA_ARGS[@]}"

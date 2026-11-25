@@ -1,0 +1,47 @@
+# Hviteliste for skrivekall mot GitHub fra sandkassene (gjelder globalt).
+#
+# Lesing (GET, HEAD, OPTIONS) er alltid tillatt. For hver [vert] under blokkeres
+# alle skrivekall (POST, PUT, PATCH, DELETE) som ikke står i lista.
+#
+# Etter endringer: kjør `sbx-github-policy` (gjelder umiddelbart, uten nytt bygg).
+# Blokkerte kall vises i `sbx policy log`.
+#
+# Format:
+#   [vert]
+#   METODE[,METODE] /sti     # kommentar
+#
+# Sti-segmenter er bokstavelig tekst (a-z, 0-9, . _ ~ -), * (nøyaktig ett
+# segment) eller ** til slutt (alt under, inkludert stien selv). Store og små
+# bokstaver behandles likt.
+
+[github.com]
+POST /*/*/git-upload-pack            # git fetch/clone/pull
+POST /*/*/git-receive-pack           # git push (blokkeres per sandkasse med --ingen-push)
+POST /*/*/info/lfs/objects/batch     # git lfs
+
+[api.github.com]
+# GraphQL brukes av gh også til lesing (gh pr view/list/create) og er eneste måte
+# å resolve review-tråder på. Merk: sti-regler kan ikke skille queries fra
+# mutations, så her er det tokenets rettigheter som er grensen.
+POST /graphql
+
+# Lage PR
+POST /repos/*/*/pulls
+
+# Kommentere på PR (og issues), svare på review-kommentarer
+POST /repos/*/*/issues/*/comments
+POST /repos/*/*/pulls/*/comments
+POST /repos/*/*/pulls/*/comments/*/replies
+
+# Forslag – fjern # for å slå på:
+# PATCH /repos/*/*/pulls/*                         # endre tittel/beskrivelse på PR (kan også lukke den)
+# POST /repos/*/*/pulls/*/requested_reviewers      # be om review
+# POST /repos/*/*/issues/*/labels                  # legge til labels
+# PATCH /repos/*/*/issues/comments/*               # redigere egne kommentarer
+# PATCH /repos/*/*/pulls/comments/*                # redigere egne review-kommentarer
+# POST /repos/*/*/issues/comments/*/reactions      # reaksjoner (f.eks. 👍 når noe er fikset)
+# POST /repos/*/*/pulls/comments/*/reactions
+# POST /repos/*/*/actions/runs/*/rerun-failed-jobs # kjøre feilede CI-jobber på nytt
+
+[uploads.github.com]
+# ingen skrivetilgang (release-assets)

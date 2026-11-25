@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Start (eller gjenoppta) agenten i en sandkasse fra base-template + git-katalog.
+set -euo pipefail
+LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib"
+# shellcheck source=../lib/felles.sh
+source "$LIB/felles.sh"
+# shellcheck source=../lib/sandkasse.sh
+source "$LIB/sandkasse.sh"
+
+bruk() {
+  cat <<HJELP
+Bruk: sbx-copilot [katalog] [flagg] [-- agent-argumenter]
+
+Starter $SBX_AGENT i sandkassen for git-repoet i <katalog> (standard: gjeldende
+katalog). Sandkassen opprettes fra $SBX_BASE_REPO:latest hvis den ikke finnes.
+Fish-skall i samme sandkasse: sbx-shell [katalog]
+
+$(felles_flagg_hjelp)
+HJELP
+}
+
+les_argumenter "$@"
+sikre_sandkasse
+
+RUN_ARGS=("${AGENT_ENV[@]}" --name "$NAVN")
+[ ${#EKSTRA_ARGS[@]} -gt 0 ] && RUN_ARGS+=(-- "${EKSTRA_ARGS[@]}")
+exec sbx run "${RUN_ARGS[@]}"
