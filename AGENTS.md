@@ -1,0 +1,1 @@
+Bruk conventional commits i dette repoet.
