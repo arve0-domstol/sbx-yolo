@@ -195,6 +195,11 @@ sbx-shell   [katalog] [--navn NAVN] [--mount] [--ingen-push] [--base TEMPLATE] [
   lager PR som før. Bare commits blir med; `sikre_sandkasse` advarer hvis repoet har
   ucommittede endringer. Verten får remoten `sandbox-<navn>` (`git fetch sandbox-<navn>`).
   `--mount` monterer katalogen direkte (gammel oppførsel). Se [SIKKERHET.md](SIKKERHET.md).
+- **git-worktree**: sbx `--clone` avviser worktrees (`.git` er en fil som peker inn i
+  hovedrepoets `.git`, som ikke er montert). `finn_worktree` finner hovedrepoet, som klones
+  i stedet, og `sjekk_ut_worktree` henter worktreens HEAD fra `/run/sandbox/source` med
+  `git fetch <sha>` og sjekker ut samme gren (med upstream) eller detached commit.
+  Navnet baseres fortsatt på worktree-katalogen. Worktrees av bare repo støttes ikke.
 - feilmelding med hint om å kjøre `sbx-bygg-base` dersom `sbx-base:latest` mangler
 
 ### 3b. `bin/sbx-vscode`

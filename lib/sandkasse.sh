@@ -3,6 +3,8 @@
 # av sandkasse fra base-template. Sources etter lib/felles.sh.
 
 KATALOG=""
+# Hovedrepoet når KATALOG er en git-worktree (sbx --clone støtter ikke worktrees).
+HOVEDREPO=""
 NAVN=""
 MOUNT=0
 INGEN_PUSH=0
@@ -54,6 +56,7 @@ les_argumenter() {
   [ -d "$KATALOG" ] || feil "'$KATALOG' er ikke en katalog"
   KATALOG="$(cd "$KATALOG" && pwd -P)"
   git -C "$KATALOG" rev-parse --git-dir >/dev/null 2>&1 || feil "'$KATALOG' er ikke et git-repo"
+  finn_worktree
 
   if [ -z "$NAVN" ]; then
     NAVN="$SBX_AGENT-$(basename "$KATALOG")"
@@ -62,6 +65,48 @@ les_argumenter() {
   fi
   [[ "$NAVN" =~ ^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$ ]] \
     || feil "ugyldig navn '$NAVN' (2–63 tegn, a-z, 0-9 og '-', kan ikke starte/slutte med '-')"
+}
+
+# Setter HOVEDREPO hvis KATALOG er en lenket git-worktree. Der er .git en fil som
+# peker inn i hovedrepoets .git, så en klone av bare worktree-katalogen mangler
+# objektene. Vi kloner derfor hovedrepoet og sjekker ut worktreens HEAD i sandkassen.
+finn_worktree() {
+  local git_dir felles_dir
+  git_dir="$(git -C "$KATALOG" rev-parse --path-format=absolute --git-dir)"
+  felles_dir="$(git -C "$KATALOG" rev-parse --path-format=absolute --git-common-dir)"
+  [ "$git_dir" != "$felles_dir" ] || return 0
+
+  [ "$(git -C "$felles_dir" rev-parse --is-bare-repository)" = false ] \
+    || feil "'$KATALOG' er en worktree av et bart repo ($felles_dir), som ikke støttes"
+  HOVEDREPO="$(git -C "$felles_dir/.." rev-parse --show-toplevel)"
+}
+
+# Sjekker ut worktreens gren (eller commit ved detached HEAD) i klonen av hovedrepoet.
+sjekk_ut_worktree() {
+  local commit gren remote merge
+  commit="$(git -C "$KATALOG" rev-parse HEAD)"
+  gren="$(git -C "$KATALOG" symbolic-ref -q --short HEAD || true)"
+  if [ -n "$gren" ]; then
+    remote="$(git -C "$KATALOG" config "branch.$gren.remote" || true)"
+    merge="$(git -C "$KATALOG" config "branch.$gren.merge" || true)"
+  fi
+  info "Sjekker ut ${gren:-$commit} fra worktreen i klonen"
+  # shellcheck disable=SC2016 # variablene ekspanderes i sandkassen
+  sbx exec -e "REPO=$HOVEDREPO" -e "COMMIT=$commit" -e "GREN=$gren" \
+    -e "REMOTE=${remote:-}" -e "MERGE=${merge:-}" "$NAVN" bash -c '
+      set -euo pipefail
+      cd "$REPO"
+      git fetch -q --no-tags /run/sandbox/source "$COMMIT"
+      if [ -z "$GREN" ]; then
+        git checkout -q --detach "$COMMIT"
+        exit 0
+      fi
+      git checkout -q -B "$GREN" "$COMMIT"
+      if [ -n "$REMOTE" ] && [ -n "$MERGE" ] && git remote get-url "$REMOTE" >/dev/null 2>&1; then
+        git config "branch.$GREN.remote" "$REMOTE"
+        git config "branch.$GREN.merge" "$MERGE"
+      fi
+    ' || feil "klarte ikke å sjekke ut ${gren:-$commit} i $NAVN"
 }
 
 # Oppretter sandkassen fra base hvis den ikke finnes.
@@ -76,17 +121,26 @@ sikre_sandkasse() {
   template_finnes "$BASE" || feil "fant ikke template '$BASE'. Bygg den med: sbx-bygg-base"
 
   local args=(--pull never -t "$BASE" --name "$NAVN" --cpus "$SBX_CPUS" --memory "$SBX_MEMORY")
+  local kilde="$KATALOG"
   if [ $MOUNT -eq 1 ]; then
     info "Oppretter $NAVN fra $BASE med $KATALOG montert (--mount)"
   else
     args+=(--clone)
-    info "Oppretter $NAVN fra $BASE med en privat klone av $KATALOG"
+    if [ -n "$HOVEDREPO" ]; then
+      kilde="$HOVEDREPO"
+      info "$KATALOG er en git-worktree; kloner hovedrepoet $HOVEDREPO i stedet"
+    fi
+    info "Oppretter $NAVN fra $BASE med en privat klone av $kilde"
     if [ -n "$(git -C "$KATALOG" status --porcelain 2>/dev/null)" ]; then
       advarsel "ucommittede endringer i $KATALOG blir ikke med i klonen"
     fi
     info "Hent agentens commits på verten med: git fetch sandbox-$NAVN"
   fi
-  sbx create "${args[@]}" "$SBX_AGENT" "$KATALOG"
+  sbx create "${args[@]}" "$SBX_AGENT" "$kilde"
+
+  if [ $MOUNT -eq 0 ] && [ -n "$HOVEDREPO" ]; then
+    sjekk_ut_worktree
+  fi
 
   if [ $INGEN_PUSH -eq 1 ]; then
     info "Blokkerer git push til github.com for $NAVN"

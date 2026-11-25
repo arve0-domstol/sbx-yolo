@@ -92,6 +92,10 @@ sbx-copilot . -- --continue            # argumenter videre til agenten
   men bare commits blir med, ikke ucommittede endringer. Hent agentens commits på verten med
   `git fetch sandbox-<navn>`. `--mount` monterer repoet direkte i stedet (se
   [SIKKERHET.md](SIKKERHET.md)).
+- Er katalogen en **git-worktree**, klones hovedrepoet (sbx `--clone` støtter ikke
+  worktrees), og worktreens gren (eller commit) sjekkes ut i klonen. Sandkassen får navn
+  etter worktree-katalogen, men workspace-stien i sandkassen er hovedrepoets sti.
+  `git fetch sandbox-<navn>` virker fra både worktreen og hovedrepoet.
 - Copilot starter alltid i yolo-modus (alle verktøy godkjent, workspace er klarert), både
   via `sbx-copilot` og når du kjører `copilot` i fish fra `sbx-shell`. Sandkassen og
   nettverkspolicyen er sikkerhetsgrensen.
