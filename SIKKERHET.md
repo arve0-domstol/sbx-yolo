@@ -2,8 +2,8 @@
 
 Copilot kjører i **yolo-modus** i sandkassene: alle verktøy og kommandoer godkjennes uten å
 spørre. Det er sandkassen, GitHub-tokenet og nettverkspolicyen som setter grensene, ikke
-agenten selv. Dette dokumentet beskriver hva som er beskyttet, hva som ikke er det, og hva
-du bør gjøre.
+agenten selv. Endringer skal gjennom review på PR før de når `main`. Dette dokumentet
+beskriver hva som er beskyttet, hva som ikke er det, og hva du bør gjøre.
 
 ## Trusselbildet
 
@@ -21,7 +21,7 @@ Gå derfor ut fra at agenten **kan gjøre alt den har tilgang til**, og begrens 
 | Sandkasse (microVM) | Agenten ser bare sandkassens filsystem, ikke resten av verten. |
 | Privat klone (standard) | Repoet klones inn i sandkassen. Agenten kan ikke endre filer på verten (verts-repoet er bare montert skrivebeskyttet på `/run/sandbox/source`, så ucommittede filer der kan leses). |
 | Secrets | GitHub-tokenet ligger på verten og legges på av proxyen. Det finnes ikke i sandkassen og kan ikke kopieres ut. |
-| Nettverkspolicy | Bare verter i policyen kan nås. Ukjente verter blokkeres (`sbx policy log`). |
+| Nettverkspolicy | TCP til alle verter er tillatt, med mindre en eksplisitt deny-regel eller overordnet policy blokkerer det. |
 | GitHub-hviteliste | Skrivekall mot GitHub er begrenset til [policy/github-hviteliste.txt](policy/github-hviteliste.txt): fetch/push, lage PR, kommentere, GraphQL. |
 
 ## Hva som *ikke* er beskyttet
@@ -55,11 +55,17 @@ inkludert offentlige repo andre eier (kommentarer kan brukes til å lekke data).
 tokenet til utvalgte repo, eller bytt `*` med eieren i hvitelisten, f.eks.
 `POST /repos/domstol/*/pulls`.
 
-### 4. Andre tillatte verter
+### 4. Åpent nettverk
 
-Standard-policyen (Balanced) åpner bl.a. pakkeregistre, AI-tjenester og `**.github.com`.
-Agenten kan sende data dit den når. Uten credentials for de tjenestene er det lite den kan
-publisere, men nettverkspolicyen er ikke en garanti mot at data lekker ut.
+Agenten kan nå dokumentasjon, pakkeregistre og andre TCP-verter, og kan sende kode og andre
+data ut av sandkassen uten credentials. Review før merge hindrer ikke slik datalekkasje
+eller andre handlinger agenten allerede har utført. Gi derfor sandkassen bare tilgang til
+data du tåler at kan sendes ut.
+
+GitHub-reglene gjelder de konkrete vertene i hvitelisten og HTTP-trafikk proxyen kan
+kontrollere. Nettverkspolicyen er ikke en fullstendig garanti mot omgåelse, blant annet
+for krypterte forbindelser proxyen ikke dekrypterer. Tokenets rettigheter og branch
+protection er fortsatt viktige.
 
 ### 5. `--mount`: filer som kjøres på verten
 

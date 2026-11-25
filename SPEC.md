@@ -315,8 +315,9 @@ sbx policy deny network github.com --method POST --path '/**/git-receive-pack'
 sbx policy deny network --sandbox <navn> github.com --method POST --path '/**/git-receive-pack'
 ```
 
-`hooks/20-policy.sh` legger globale `allow`-regler for verter mise trenger, og kjører
-`sbx-github-policy` (se under). Push er tillatt som standard; `sbx-copilot --ingen-push`
+`hooks/20-policy.sh` kjører først `sbx-github-policy` (se under), og tillater deretter
+TCP til alle verter (`**`), også dokumentasjon og pakkeregistre. Eksplisitte deny-regler
+gjelder fortsatt. Push er tillatt som standard; `sbx-copilot --ingen-push`
 blokkerer **per sandkasse**. En global deny-regel kan ikke
 overstyres per sandkasse. Global deny kan likevel slås på med `SBX_GLOBAL_DENY_PUSH=1`.
 
@@ -373,9 +374,9 @@ branch protection grensen.
   behov med `mise install` i sandkassen. Hyppig brukte versjoner flyttes inn i
   `init/files/.config/mise/config.toml` og base bygges på nytt.
 - Nettverk: byggesandkassen må nå `mise.run`, `github.com`, `objects.githubusercontent.com`
-  og registre for verktøyene (npm, pypi, …). Standard-policyen dekker det meste; i tillegg
-  trengs bl.a. `mise-java.jdx.dev` og `download.java.net`. Sjekk med `sbx policy log` ved feil og legg
-  nødvendige `allow`-regler i `hooks/20-policy.sh`.
+  og registre for verktøyene (npm, pypi, …). `hooks/20-policy.sh` tillater TCP til alle
+  verter; eksplisitte deny-regler og overordnet policy kan fortsatt blokkere tilgang.
+  Sjekk `sbx policy log` ved feil.
 - Base bygges på nytt periodisk (f.eks. ukentlig) for oppdaterte pakker; dato-tags gjør det
   enkelt å rulle tilbake (`sbx-copilot` kan ta `--base sbx-base:<dato>`).
 
@@ -402,7 +403,7 @@ av det samme, og `sbx env` / `sbxenv.yaml` for deklarativ oppretting.
    - [x] Inkrementelt bygg med sjekksum per steg (`--full`, `--tving`, `SBX_FULLT_BYGG_DAGER`)
 4. **Hooks**
    - [x] `10-skills.sh` – import/add/update
-   - [x] `20-policy.sh` – allow for mise/registre (deny for push per sandkasse med `--ingen-push`)
+   - [x] `20-policy.sh` – generell TCP-tilgang og GitHub-hviteliste (deny for push per sandkasse med `--ingen-push`)
    - [x] `90-ekstra.sh` – mal for egne `sbx exec`-kommandoer
 5. **`sbx-copilot` / `sbx-shell`**
    - [x] Navngiving, gjenoppta eksisterende, klone som standard/`--mount`, `--ingen-push`, `--base`

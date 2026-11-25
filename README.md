@@ -103,10 +103,15 @@ sbx-copilot . -- --continue            # argumenter videre til agenten
 - Agenten kan pushe til GitHub og lage/kommentere PR selv (krever at tokenet har
   skrivetilgang), begrenset av [hvitelisten](policy/github-hviteliste.txt). `--ingen-push`
   blokkerer i tillegg `git push` over HTTPS til github.com for sandkassen.
+- Nettverkspolicyen tillater TCP til alle verter, blant annet dokumentasjon og pakkeregistre.
+  Eksplisitte deny-regler gjelder fortsatt, inkludert GitHub-hvitelisten. Policy-hooken
+  kjøres ved bygg av base og endrer policyen globalt, også for eksisterende sandkasser.
 
 > **Sikkerhet:** copilot kjører uten å spørre, og kan gjøre alt GitHub-tokenet og
 > nettverkspolicyen tillater. Bruk et fin-granulert token begrenset til egne repo og uten
-> Workflows-rettighet, og vær forsiktig med `--mount`. Se [SIKKERHET.md](SIKKERHET.md).
+> Workflows-rettighet, krev review før merge til `main`, og vær forsiktig med `--mount`.
+> Åpent nettverk kan brukes til å sende ut kode og data før review. Se
+> [SIKKERHET.md](SIKKERHET.md).
 
 ### `sbx-vscode` – VS Code mot sandkassen over SSH
 
@@ -243,7 +248,7 @@ skills, secrets og policy gjelder uten nytt bygg.
 | global git-konfig           | [init/files/.config/git/config](init/files/.config/git/config) |
 | andre filer i `$HOME`       | legg dem i [init/files/](init/files/). Alt der kopieres til `/home/agent` |
 | skills                      | [hooks/10-skills.sh](hooks/10-skills.sh): `SKILL_REPOS` for git-repo. Lokale skills importeres automatisk |
-| nettverksregler             | [hooks/20-policy.sh](hooks/20-policy.sh): `ALLOW_HOSTS`. `SBX_GLOBAL_DENY_PUSH=1` gir global push-blokkering |
+| nettverksregler             | [hooks/20-policy.sh](hooks/20-policy.sh): generell TCP-tilgang og GitHub-hviteliste. `SBX_GLOBAL_DENY_PUSH=1` gir global push-blokkering |
 | skrivetilgang mot GitHub    | [policy/github-hviteliste.txt](policy/github-hviteliste.txt), deretter `sbx-github-policy` (ikke nytt bygg) |
 | VS Code Server i base       | [hooks/60-vscode.sh](hooks/60-vscode.sh) (hoppes over hvis `code` mangler på verten) |
 | egne kommandoer i base      | [hooks/90-ekstra.sh](hooks/90-ekstra.sh), eller nye `hooks/NN-navn.sh` |
@@ -256,8 +261,8 @@ kjøres bare når de er endret (se [sbx-bygg-base](#sbx-bygg-base--bygg-base-tem
 en hook av noe utenfor fila, legg inn en linje `# sbx-nøkkel: <kommando>`. Utdata fra
 kommandoen tas da med i sjekksummen, slik [hooks/60-vscode.sh](hooks/60-vscode.sh) gjør med VS Code-versjonen.
 
-Feiler `mise install` eller `apt-get` på grunn av nettverk, finner du verten med `sbx policy log`.
-Legg den til i `ALLOW_HOSTS` og bygg på nytt.
+Feiler `mise install` eller `apt-get` på grunn av nettverk, sjekk `sbx policy log` og
+eventuelle eksplisitte deny-regler eller overordnet policy.
 
 ## Struktur
 

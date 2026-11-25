@@ -1,3 +1,4 @@
 [tools]
 jq = "latest"
 python = "3"
+shellcheck = "latest"
